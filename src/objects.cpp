@@ -27,8 +27,11 @@
 #define ransac_distance_thresh 0.01 //deviation from plane
 #define plane_degree_tolerance 5.0 //deviation from horizontal
 #define euclid_cluster_tolerance 0.05 //5cm
+#define y_table_buffer 0.025
 
-ros::Publisher pub;
+ros::Publisher external;
+ros::Publisher table;
+ros::Publisher objects;
 
 void visualize(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, char* name) {
   pcl::visualization::CloudViewer viewer (name);
@@ -114,15 +117,16 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr largestHorizontalPlane(pcl::PointCloud<pcl::
   return h_plane;
 }
 
-void euclidExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud) {
+void tableExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr extract_from) {
   pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
   tree->setInputCloud (cloud);
 
   std::vector<pcl::PointIndices> cluster_indices;
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_cluster (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr extract_out (new pcl::PointCloud<pcl::PointXYZ>);
 
-  /*pcl::ExtractIndices<pcl::PointXYZ> extract;
-  extract.setInputCloud (cloud);*/
+  pcl::ExtractIndices<pcl::PointXYZ> extract;
+  extract.setInputCloud (cloud);
   
   pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
   ec.setClusterTolerance (euclid_cluster_tolerance);
@@ -138,19 +142,78 @@ void euclidExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud) {
     return;
   }
 
-  std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin ();
+  /*std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin ();
   for (std::vector<int>::const_iterator pit = it->indices.begin (); pit != it->indices.end (); ++pit) {
      cloud_cluster->points.push_back (cloud->points[*pit]);
   }
   cloud_cluster->width = cloud_cluster->points.size ();
   cloud_cluster->height = 1;
-  cloud_cluster->is_dense = true;
+  cloud_cluster->is_dense = true;*/
 
-  /*pcl::PointIndices::Ptr indices (new pcl::PointIndices);
-  indices = (cluster_indices.at(0));
+  pcl::PointIndices::Ptr indices (new pcl::PointIndices);
+
+  //visualize(cloud, "Before");
+
+  indices->indices = (cluster_indices.at(0)).indices;
   extract.setIndices(indices);
   extract.setNegative (false);
-  extract.filter (*cloud_cluster);*/
+  extract.filter (*cloud_cluster);
+  extract.setInputCloud(extract_from);
+  extract.setNegative (true);
+  extract.filter (*extract_out);
+
+  //visualize(cloud, "After");
+
+  ROS_INFO("Point Cloud Made");
+  *extract_from = *extract_out;
+  *cloud = *cloud_cluster;
+}
+
+void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr extract_from) {
+  pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
+  tree->setInputCloud (cloud);
+
+  std::vector<pcl::PointIndices> cluster_indices;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_cluster (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr extract_out (new pcl::PointCloud<pcl::PointXYZ>);
+
+  pcl::ExtractIndices<pcl::PointXYZ> extract;
+  
+  pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+  ec.setClusterTolerance (euclid_cluster_tolerance);
+  ec.setMinClusterSize (10);
+  ec.setMaxClusterSize (2000);
+  ec.setSearchMethod (tree);
+  ec.setInputCloud (cloud);
+  ec.extract (cluster_indices);
+
+  ROS_INFO("Extraction Done: [%d] clusters", cluster_indices.size());
+  if (cluster_indices.size() == 0) {
+    *cloud = *cloud_cluster;
+    return;
+  }
+
+  /*std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin ();
+  for (std::vector<int>::const_iterator pit = it->indices.begin (); pit != it->indices.end (); ++pit) {
+     cloud_cluster->points.push_back (cloud->points[*pit]);
+  }
+  cloud_cluster->width = cloud_cluster->points.size ();
+  cloud_cluster->height = 1;
+  cloud_cluster->is_dense = true;*/
+
+  pcl::PointIndices::Ptr indices (new pcl::PointIndices);
+  
+  for (int i = 0; i < cluster_indices.size(); i++) {
+    indices->indices = (cluster_indices.at(0)).indices;
+    extract.setInputCloud (cloud);
+    extract.setIndices(indices);
+    extract.setNegative (false);
+    extract.filter (*cloud_cluster);
+    extract.setNegative (true);
+    extract.setInputCloud (extract_from);
+    extract.filter (*extract_out);
+    *extract_from = *extract_out;
+  } 
 
   ROS_INFO("Point Cloud Made");
   *cloud = *cloud_cluster;
@@ -159,8 +222,14 @@ void euclidExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud) {
 void 
 cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud = toFilteredPointCloud(input);
-  pcl::PCLPointCloud2::Ptr output_pcl (new pcl::PCLPointCloud2);
-  sensor_msgs::PointCloud2 output;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr remainders = toFilteredPointCloud(input);
+
+  pcl::PCLPointCloud2::Ptr objects_pcl (new pcl::PCLPointCloud2);
+  sensor_msgs::PointCloud2 objects_msg;
+  pcl::PCLPointCloud2::Ptr table_pcl (new pcl::PCLPointCloud2);
+  sensor_msgs::PointCloud2 table_msg;
+  pcl::PCLPointCloud2::Ptr external_pcl (new pcl::PCLPointCloud2);
+  sensor_msgs::PointCloud2 external_msg;
   
   //Remove the floor through a pass through filter
   passThrough(filtered_cloud, "y", lower_cutoff, upper_cutoff);
@@ -168,7 +237,7 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
 
   //isolate table
   pcl::PointCloud<pcl::PointXYZ>::Ptr h_plane = largestHorizontalPlane(filtered_cloud);
-  euclidExtract(h_plane);
+  tableExtract(h_plane, remainders);
   //visualize(h_plane, "Horizontal Plane");
 
   pcl::PointXYZ min = pcl::PointXYZ();
@@ -177,12 +246,26 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   //visualize(filtered_cloud, "Post Extraction");
   passThrough(filtered_cloud, "x", min.x, max.x);
   passThrough(filtered_cloud, "z", min.z, max.z);
-  passThrough(filtered_cloud, "y", lower_cutoff, max.y);
+  passThrough(filtered_cloud, "y", lower_cutoff, max.y - y_table_buffer);
+  // ROS_INFO("The y table max and min [%f] [%f]", max.y, min.y);
+  // ROS_INFO("The y table cutoff [%f]", max.y - y_table_buffer);
   //visualize(filtered_cloud, "Objects");
+
   
-  pcl::toPCLPointCloud2(*filtered_cloud, *output_pcl);
-  pcl_conversions::fromPCL(*output_pcl, output);
-  pub.publish (output);
+  
+  pcl::toPCLPointCloud2(*filtered_cloud, *objects_pcl);
+  pcl_conversions::fromPCL(*objects_pcl, objects_msg);
+  objects.publish (objects_msg);
+
+  pcl::toPCLPointCloud2(*h_plane, *table_pcl);
+  pcl_conversions::fromPCL(*table_pcl, table_msg);
+  table.publish (table_msg);
+  
+  objectsExtract(filtered_cloud, remainders);
+  pcl::toPCLPointCloud2(*remainders, *external_pcl);
+  pcl_conversions::fromPCL(*external_pcl, external_msg);
+  external.publish (external_msg);
+
 }
 
 int
@@ -195,7 +278,9 @@ main (int argc, char** argv) {
   ros::Subscriber sub = nh.subscribe ("/hsrb/head_rgbd_sensor/depth_registered/rectified_points", 1, cloud_cb);
 
   // Create a ROS publisher for the output point cloud
-  pub = nh.advertise<sensor_msgs::PointCloud2> ("objects", 1);
+  external = nh.advertise<sensor_msgs::PointCloud2> ("external", 1);
+  table = nh.advertise<sensor_msgs::PointCloud2> ("table", 1);
+  objects = nh.advertise<sensor_msgs::PointCloud2> ("objects", 1);
 
   // Spin
   ros::spin ();
