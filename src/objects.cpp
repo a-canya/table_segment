@@ -28,17 +28,23 @@
 #define plane_degree_tolerance 5.0 //deviation from horizontal
 #define euclid_cluster_tolerance 0.05 //5cm
 #define y_table_buffer 0.025
+#define x_table_buffer 0.025
+#define z_table_buffer 0.025
 
 ros::Publisher external;
 ros::Publisher table;
 ros::Publisher objects;
 
+/*For debugging, does nothing else*/
 void visualize(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, char* name) {
   pcl::visualization::CloudViewer viewer (name);
   viewer.showCloud(cloud);
   while (!viewer.wasStopped ()) {};
 }
 
+/* Voxel downsize the input cloud to reduce the computational load and also convert to PointCloud<PointXYZ> type
+ * To do: implement outlier removal and/or other noise reduction methods
+ */
 pcl::PointCloud<pcl::PointXYZ>::Ptr toFilteredPointCloud(const sensor_msgs::PointCloud2ConstPtr& input) {
   pcl::PCLPointCloud2::Ptr cloud_blob (new pcl::PCLPointCloud2);
   pcl::PCLPointCloud2::Ptr cloud_filtered_blob (new pcl::PCLPointCloud2);
@@ -63,6 +69,7 @@ void passThrough(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, char* field_name, do
   pass.filter (*cloud);
 }
 
+/* Extract the most represented horizontal (+- deviation) plane from the scene*/
 pcl::PointCloud<pcl::PointXYZ>::Ptr largestHorizontalPlane(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud) {
   pcl::PointCloud<pcl::PointXYZ>::Ptr h_plane (new pcl::PointCloud<pcl::PointXYZ>);
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_f (new pcl::PointCloud<pcl::PointXYZ>);
@@ -117,6 +124,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr largestHorizontalPlane(pcl::PointCloud<pcl::
   return h_plane;
 }
 
+/* Extracts the table (the largest euclidean cluster from the extracted plane)*/
 void tableExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr extract_from) {
   pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
   tree->setInputCloud (cloud);
@@ -142,14 +150,6 @@ void tableExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl
     return;
   }
 
-  /*std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin ();
-  for (std::vector<int>::const_iterator pit = it->indices.begin (); pit != it->indices.end (); ++pit) {
-     cloud_cluster->points.push_back (cloud->points[*pit]);
-  }
-  cloud_cluster->width = cloud_cluster->points.size ();
-  cloud_cluster->height = 1;
-  cloud_cluster->is_dense = true;*/
-
   pcl::PointIndices::Ptr indices (new pcl::PointIndices);
 
   //visualize(cloud, "Before");
@@ -169,6 +169,9 @@ void tableExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl
   *cloud = *cloud_cluster;
 }
 
+/* To do: store extracted object point clouds seperately in a vector of PointCloud<PointXYZ>::Ptr (objects)
+ * also define what the minimum # of points euclidean clustered together it takes to constitute an "object" 
+ */
 void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr extract_from) {
   pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
   tree->setInputCloud (cloud);
@@ -193,14 +196,6 @@ void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<p
     return;
   }
 
-  /*std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin ();
-  for (std::vector<int>::const_iterator pit = it->indices.begin (); pit != it->indices.end (); ++pit) {
-     cloud_cluster->points.push_back (cloud->points[*pit]);
-  }
-  cloud_cluster->width = cloud_cluster->points.size ();
-  cloud_cluster->height = 1;
-  cloud_cluster->is_dense = true;*/
-
   pcl::PointIndices::Ptr indices (new pcl::PointIndices);
   
   for (int i = 0; i < cluster_indices.size(); i++) {
@@ -221,9 +216,11 @@ void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<p
 
 void 
 cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
+  //Filter a point cloud for processing and initialize a cloud for environment (not table or objects)
   pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud = toFilteredPointCloud(input);
   pcl::PointCloud<pcl::PointXYZ>::Ptr remainders = toFilteredPointCloud(input);
 
+  //intermediate clouds for publishing back into sensor_msgs
   pcl::PCLPointCloud2::Ptr objects_pcl (new pcl::PCLPointCloud2);
   sensor_msgs::PointCloud2 objects_msg;
   pcl::PCLPointCloud2::Ptr table_pcl (new pcl::PCLPointCloud2);
@@ -233,26 +230,29 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   
   //Remove the floor through a pass through filter
   passThrough(filtered_cloud, "y", lower_cutoff, upper_cutoff);
-  //visualize(filtered_cloud, "Y cutoff");
 
-  //isolate table
+  //Isolate plane of the table
   pcl::PointCloud<pcl::PointXYZ>::Ptr h_plane = largestHorizontalPlane(filtered_cloud);
+  //Extract the table from its plane and put that in h_plane, also extract the table from the environment
   tableExtract(h_plane, remainders);
-  //visualize(h_plane, "Horizontal Plane");
 
+  //Get the XYZ boundaries of the table
+  //To do: replace with something better
   pcl::PointXYZ min = pcl::PointXYZ();
   pcl::PointXYZ max = pcl::PointXYZ();
-  pcl::getMinMax3D(*h_plane, min, max);
-  //visualize(filtered_cloud, "Post Extraction");
-  passThrough(filtered_cloud, "x", min.x, max.x);
-  passThrough(filtered_cloud, "z", min.z, max.z);
-  passThrough(filtered_cloud, "y", lower_cutoff, max.y - y_table_buffer);
-  // ROS_INFO("The y table max and min [%f] [%f]", max.y, min.y);
-  // ROS_INFO("The y table cutoff [%f]", max.y - y_table_buffer);
-  //visualize(filtered_cloud, "Objects");
+  pcl::getMinMax3D(*h_plane, min, max);;
 
-  
-  
+  //Isolate only the area above the boundaries of the table upwards (where objects would be)
+  passThrough(filtered_cloud, "x", min.x + x_table_buffer, max.x - x_table_buffer);
+  passThrough(filtered_cloud, "z", min.z + z_table_buffer, max.z - z_table_buffer);
+  passThrough(filtered_cloud, "y", lower_cutoff, max.y - y_table_buffer);
+
+  /* Here is where the all objects in one cloud stuff would be extracted into 
+   * their own individual pointclouds in a vector that we could output, not done yet
+   */
+
+
+  //Publish the outputs
   pcl::toPCLPointCloud2(*filtered_cloud, *objects_pcl);
   pcl_conversions::fromPCL(*objects_pcl, objects_msg);
   objects.publish (objects_msg);
