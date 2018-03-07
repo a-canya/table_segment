@@ -24,19 +24,20 @@
 #define filter_voxel_size 0.01f //voxel size
 #define lower_cutoff -2.0 //ceiling
 #define upper_cutoff 0.90 //floor
-#define ransac_distance_thresh 0.01 //deviation from plane
+#define ransac_distance_thresh 0.02 //deviation from plane
 #define plane_degree_tolerance 5.0 //deviation from horizontal
 #define euclid_cluster_tolerance 0.05 //5cm
 #define y_table_buffer 0.025
 #define x_table_buffer 0.025
 #define z_table_buffer 0.025
+#define max_item_height 0.30
 
 ros::Publisher external;
 ros::Publisher table;
 ros::Publisher objects;
 
 /*For debugging, does nothing else*/
-void visualize(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, char* name) {
+void visualize(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, std::string name) {
   pcl::visualization::CloudViewer viewer (name);
   viewer.showCloud(cloud);
   while (!viewer.wasStopped ()) {};
@@ -44,6 +45,7 @@ void visualize(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, char* name) {
 
 /* Voxel downsize the input cloud to reduce the computational load and also convert to PointCloud<PointXYZ> type
  * To do: implement outlier removal and/or other noise reduction methods
+ * Also to do: handle transformations of the PointCloud so that it aligns with the axis that we want (y is vertical)
  */
 pcl::PointCloud<pcl::PointXYZ>::Ptr toFilteredPointCloud(const sensor_msgs::PointCloud2ConstPtr& input) {
   pcl::PCLPointCloud2::Ptr cloud_blob (new pcl::PCLPointCloud2);
@@ -61,7 +63,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr toFilteredPointCloud(const sensor_msgs::Poin
   return out;
 }
 
-void passThrough(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, char* field_name, double lower_bound, double upper_bound) {
+void passThrough(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, std::string field_name, double lower_bound, double upper_bound) {
   pcl::PassThrough<pcl::PointXYZ> pass;
   pass.setInputCloud (cloud);
   pass.setFilterFieldName (field_name);
@@ -111,13 +113,13 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr largestHorizontalPlane(pcl::PointCloud<pcl::
       //visualize(h_plane, "Horizontal Plane");
       extract.setNegative (true);
       extract.filter (*cloud_f);
-      cloud.swap (cloud_f);
+      *cloud = *cloud_f;
       return h_plane;
     }
-
+    //visualize(cloud, "before");
     extract.setNegative (true);
     extract.filter (*cloud_f);
-    cloud.swap (cloud_f);
+    *cloud = *cloud_f;
     //visualize(cloud, "Filtered Cloud");
     i++;
   }
@@ -236,7 +238,10 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   //Extract the table from its plane and put that in h_plane, also extract the table from the environment
   tableExtract(h_plane, remainders);
 
-  //Get the XYZ boundaries of the table
+  /*Tried removing plane of table in euclidean clustering, was not working, done in ransac instead*/
+  //*filtered_cloud = *remainders;
+
+  //Get the approximate XYZ boundaries of the table
   //To do: replace with something better
   pcl::PointXYZ min = pcl::PointXYZ();
   pcl::PointXYZ max = pcl::PointXYZ();
@@ -245,7 +250,7 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   //Isolate only the area above the boundaries of the table upwards (where objects would be)
   passThrough(filtered_cloud, "x", min.x + x_table_buffer, max.x - x_table_buffer);
   passThrough(filtered_cloud, "z", min.z + z_table_buffer, max.z - z_table_buffer);
-  passThrough(filtered_cloud, "y", lower_cutoff, max.y - y_table_buffer);
+  passThrough(filtered_cloud, "y", max.y - max_item_height, max.y - y_table_buffer);
 
   /* Here is where the all objects in one cloud stuff would be extracted into 
    * their own individual pointclouds in a vector that we could output, not done yet
