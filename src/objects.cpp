@@ -22,8 +22,8 @@
 #include <pcl/segmentation/extract_clusters.h>
 
 #define filter_voxel_size 0.01f //voxel size
-#define lower_cutoff -2.0 //ceiling
-#define upper_cutoff 0.90 //floor
+#define lower_cutoff -0.1 //ceiling
+#define upper_cutoff 0.50 //floor
 #define ransac_distance_thresh 0.02 //deviation from plane
 #define plane_degree_tolerance 5.0 //deviation from horizontal
 #define euclid_cluster_tolerance 0.05 //5cm
@@ -137,7 +137,7 @@ void tableExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl
 
   pcl::ExtractIndices<pcl::PointXYZ> extract;
   extract.setInputCloud (cloud);
-  
+
   pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
   ec.setClusterTolerance (euclid_cluster_tolerance);
   ec.setMinClusterSize (100);
@@ -172,7 +172,7 @@ void tableExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl
 }
 
 /* To do: store extracted object point clouds seperately in a vector of PointCloud<PointXYZ>::Ptr (objects)
- * also define what the minimum # of points euclidean clustered together it takes to constitute an "object" 
+ * also define what the minimum # of points euclidean clustered together it takes to constitute an "object"
  */
 void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr extract_from) {
   pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
@@ -183,7 +183,7 @@ void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<p
   pcl::PointCloud<pcl::PointXYZ>::Ptr extract_out (new pcl::PointCloud<pcl::PointXYZ>);
 
   pcl::ExtractIndices<pcl::PointXYZ> extract;
-  
+
   pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
   ec.setClusterTolerance (euclid_cluster_tolerance);
   ec.setMinClusterSize (10);
@@ -199,7 +199,7 @@ void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<p
   }
 
   pcl::PointIndices::Ptr indices (new pcl::PointIndices);
-  
+
   for (int i = 0; i < cluster_indices.size(); i++) {
     indices->indices = (cluster_indices.at(0)).indices;
     extract.setInputCloud (cloud);
@@ -210,14 +210,14 @@ void objectsExtract(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, pcl::PointCloud<p
     extract.setInputCloud (extract_from);
     extract.filter (*extract_out);
     *extract_from = *extract_out;
-  } 
+  }
 
   ROS_INFO("Point Cloud Made");
   *cloud = *cloud_cluster;
 }
 
-void 
-cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
+void
+cloud_cb (const sensor_msgs::PointCloud2ConstPtr& input) {
   //Filter a point cloud for processing and initialize a cloud for environment (not table or objects)
   pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud = toFilteredPointCloud(input);
   pcl::PointCloud<pcl::PointXYZ>::Ptr remainders = toFilteredPointCloud(input);
@@ -229,8 +229,8 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   sensor_msgs::PointCloud2 table_msg;
   pcl::PCLPointCloud2::Ptr external_pcl (new pcl::PCLPointCloud2);
   sensor_msgs::PointCloud2 external_msg;
-  
-  //Remove the floor through a pass through filter
+
+  //Remove the floor and the ceiling through a pass through filter
   passThrough(filtered_cloud, "y", lower_cutoff, upper_cutoff);
 
   //Isolate plane of the table
@@ -245,14 +245,14 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   //To do: replace with something better
   pcl::PointXYZ min = pcl::PointXYZ();
   pcl::PointXYZ max = pcl::PointXYZ();
-  pcl::getMinMax3D(*h_plane, min, max);;
+  pcl::getMinMax3D(*h_plane, min, max);
 
   //Isolate only the area above the boundaries of the table upwards (where objects would be)
   passThrough(filtered_cloud, "x", min.x + x_table_buffer, max.x - x_table_buffer);
   passThrough(filtered_cloud, "z", min.z + z_table_buffer, max.z - z_table_buffer);
   passThrough(filtered_cloud, "y", max.y - max_item_height, max.y - y_table_buffer);
 
-  /* Here is where the all objects in one cloud stuff would be extracted into 
+  /* Here is where the all objects in one cloud stuff would be extracted into
    * their own individual pointclouds in a vector that we could output, not done yet
    */
 
@@ -265,7 +265,7 @@ cloud_cb  (const sensor_msgs::PointCloud2ConstPtr& input) {
   pcl::toPCLPointCloud2(*h_plane, *table_pcl);
   pcl_conversions::fromPCL(*table_pcl, table_msg);
   table.publish (table_msg);
-  
+
   objectsExtract(filtered_cloud, remainders);
   pcl::toPCLPointCloud2(*remainders, *external_pcl);
   pcl_conversions::fromPCL(*external_pcl, external_msg);
